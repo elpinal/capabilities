@@ -1,6 +1,13 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeFamilies #-}
+
 module Capabilities
   (
   ) where
+
+import Control.Monad.Freer
+import Control.Monad.Freer.Error
+import Control.Monad.Freer.Reader
 
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Map.Lazy as Map
@@ -105,3 +112,32 @@ newtype RegionContext = RegionContext (Map.Map Location Type)
 
 newtype MemoryContext = MemoryContext (Map.Map Name RegionContext)
   deriving (Eq, Show)
+
+data TypeError
+  = TypeMismatch Type Type
+  | UnboundVariable Int
+  deriving (Eq, Show)
+
+nth :: Int -> [a] -> Maybe a
+nth n xs
+  | 0 <= n && n < length xs = return $ xs !! n
+  | otherwise               = Nothing
+
+lookupVar :: Members '[Reader Context, Error TypeError] r => Int -> Eff r Type
+lookupVar n = do
+  Context ts <- ask
+  maybe (throwError $ UnboundVariable n) return $ nth n ts
+
+class Typed a where
+  type Output a
+  type Effects a :: [* -> *]
+
+  typeOf :: Members (Effects a) r => a -> Eff r (Output a)
+
+instance Typed Value where
+  type Output Value = Type
+  type Effects Value = '[Reader Context, Error TypeError]
+
+  typeOf (Var n) = lookupVar n
+  typeOf (Int _) = return IntType
+  typeOf (Handle name) = return $ HandleType $ RegionName name

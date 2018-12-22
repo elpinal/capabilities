@@ -7,7 +7,7 @@ module Index
   , GShift(..)
   ) where
 
-import GHC.Generics hiding (Constructor)
+import GHC.Generics
 
 -- Shifts variables.
 class Shift a where

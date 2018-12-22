@@ -171,10 +171,13 @@ instance Shift a => Shift [a] where
   shiftAbove c d x = shiftAbove c d <$> x
 
 instance Shift Type where
-  shiftAbove c d (Fun cctx cap ts r) = Fun (f cctx) (g cap) (g ts) (g r)
+  shiftAbove c d (Fun cctx cap ts r) = Fun (f cctx) (g cap) (g ts) (f r)
     where
       c' = c + length (getConstrContext cctx)
+
+      f :: Shift a => a -> a
       f = shiftAbove c d
+
       g :: Shift a => a -> a
       g = shiftAbove c' d
   shiftAbove c d ty = to $ gShiftAbove c d $ from ty

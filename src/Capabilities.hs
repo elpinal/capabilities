@@ -82,6 +82,18 @@ data Constructor
   | CCapability Capability
   deriving (Eq, Show)
 
+fromType :: Constructor -> Type
+fromType (CType ty) = ty
+fromType c          = error $ "fromType: not type: " ++ show c
+
+fromRegion :: Constructor -> Region
+fromRegion (CRegion r) = r
+fromRegion c           = error $ "fromRegion: not region: " ++ show c
+
+fromCapability :: Constructor -> Capability
+fromCapability (CCapability cap) = cap
+fromCapability c                 = error $ "fromCapability: not capability: " ++ show c
+
 data HValue
   = Fix ConstrContext Capability (NonEmpty.NonEmpty Type) Term
   | Tuple (NonEmpty.NonEmpty Value)
@@ -108,6 +120,9 @@ data ConstrBinding
 
 newtype ConstrContext = ConstrContext { getConstrContext :: [ConstrBinding] }
   deriving (Eq, Show, Generic)
+
+cctxLen :: ConstrContext -> Int
+cctxLen (ConstrContext xs) = length xs
 
 newtype Context = Context [Type]
   deriving (Eq, Show)
@@ -143,7 +158,7 @@ instance Shift a => Shift [a] where
 instance Shift Type where
   shiftAbove c d (Fun cctx cap ts r) = Fun (f cctx) (g cap) (g ts) (f r)
     where
-      c' = c + length (getConstrContext cctx)
+      c' = c + cctxLen cctx
 
       f :: Shift a => a -> a
       f = shiftAbove c d
@@ -151,6 +166,43 @@ instance Shift Type where
       g :: Shift a => a -> a
       g = shiftAbove c' d
   shiftAbove c d ty = to $ gShiftAbove c d $ from ty
+
+class Subst a where
+  -- Assume `j` is 0 when called from other functions.
+  subst :: Int -> Constructor -> a -> a
+
+instance Subst Type where
+  subst _ _ IntType  = IntType
+  subst j c ty @ (TVar v)
+    | Variable j == v = shift j $ fromType c
+    | otherwise       = ty
+  subst j c (HandleType r) = HandleType $ subst j c r
+  subst j c (Fun cctx cap ts r) = Fun (subst j' c cctx) (subst j' c cap) (subst j' c <$> ts) (subst j c r)
+    where
+      j' = j + cctxLen cctx
+  subst j c (TupleType ts r) = TupleType (subst j c <$> ts) $ subst j c r
+
+instance Subst Region where
+  subst _ _ r @ (RegionName _) = r
+  subst j c r @ (RVar v)
+    | Variable j == v = shift j $ fromRegion c
+    | otherwise       = r
+
+instance Subst ConstrContext where
+  subst j c (ConstrContext bs) = ConstrContext $ subst j c <$> bs
+
+instance Subst ConstrBinding where
+  subst _ _ b @ (Bind _) = b
+  subst j c (Subcap cap) = Subcap $ subst j c cap
+
+instance Subst Capability where
+  subst _ _ Empty = Empty
+  subst j c cap @ (CapVar v)
+    | Variable j == v = shift j $ fromCapability c
+    | otherwise       = cap
+  subst j c (Singleton r m) = Singleton (subst j c r) m
+  subst j c (Join c1 c2)    = Join (subst j c c1) (subst j c c2)
+  subst j c (Strip cap)     = Strip $ subst j c cap
 
 data TypeError
   = TypeMismatch Type Type

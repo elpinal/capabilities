@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Capabilities
   (
@@ -11,7 +12,10 @@ import Control.Monad.Freer
 import Control.Monad.Freer.Error
 import Control.Monad.Freer.Reader
 
+import Data.Coerce
 import Data.Functor
+import Data.Heap (Heap, viewMin)
+import qualified Data.Heap as Heap
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Map.Lazy as Map
 
@@ -26,10 +30,10 @@ data Kind
   deriving (Eq, Show, Generic)
 
 newtype Variable = Variable Int
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 newtype Name = Name Int
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 newtype Location = Location Int
   deriving (Eq, Show)
@@ -45,7 +49,7 @@ data Type
 data Region
   = RVar Variable
   | RegionName Name
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Ord, Show, Generic)
 
 data Term
   = Let Decl Term
@@ -113,7 +117,7 @@ data Capability
 data Multi
   = Unique
   | NonUnique
-  deriving (Eq, Show, Generic)
+  deriving (Eq, Ord, Show, Generic)
 
 data ConstrBinding
   = Bind Kind
@@ -346,3 +350,60 @@ instance Typed Value where
 
 substTop :: (Shift a, Subst a) => Int -> Constructor -> a -> a
 substTop n c x = shift (-1) $ subst 0 (shift n c) x
+
+data CapElem
+  = EVar Variable -- capability variable
+  | ESVar Variable -- stripped capability variable
+  | ERegion Region Multi -- region with multiplicity
+  deriving (Eq, Show)
+
+-- ESVar < EVar < ERegion.
+instance Ord CapElem where
+  ESVar v1 <= ESVar v2 = v1 <= v2
+  ESVar _ <= _ = True
+
+  EVar v1 <= EVar v2 = v1 <= v2
+  EVar _ <= ESVar _ = False
+  EVar _ <= ERegion _ _ = True
+
+  ERegion r1 m1 <= ERegion r2 m2 = (r1, m2) <= (r2, m2)
+  ERegion _ _ <= ESVar _ = False
+  ERegion _ _ <= EVar _ = False
+
+newtype NormalizedCap = NormalizedCap (Heap CapElem)
+  deriving (Eq, Show)
+
+mapNormalizedCap :: (CapElem -> CapElem) -> NormalizedCap -> NormalizedCap
+mapNormalizedCap = coerce . Heap.map
+
+singleton :: CapElem -> NormalizedCap
+singleton = coerce . Heap.singleton
+
+strip :: CapElem -> CapElem
+strip (EVar v) = ESVar v
+strip e @ (ESVar _) = e
+strip (ERegion r _) = ERegion r NonUnique
+
+normalize :: Capability -> NormalizedCap
+normalize (CapVar v) = singleton $ EVar v
+normalize Empty = NormalizedCap Heap.empty
+normalize (Singleton r m) = singleton $ ERegion r m
+normalize (Join c1 c2) = coerce Heap.union (normalize c1) (normalize c2)
+normalize (Strip cap) = mapNormalizedCap strip $ normalize cap
+
+equal :: Heap CapElem -> Heap CapElem -> Bool
+equal (viewMin -> Nothing) (viewMin -> Nothing) = True
+equal (viewMin -> Just (e1, h1)) (viewMin -> Just (e2, h2))
+  | e1 /= e2 = False
+  | otherwise = equal (skip e1 h1) (skip e2 h2)
+equal _ _ = False
+
+skip :: CapElem -> Heap CapElem -> Heap CapElem
+skip e0 h0 @ (viewMin -> Just (e, h))
+  | e0 == e = skip e0 h
+  | otherwise = h0
+skip _ h = h
+
+capEqual :: Capability -> Capability -> Bool
+capEqual c1 c2 = normalize c1 `eq` normalize c2
+  where eq = coerce equal

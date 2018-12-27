@@ -361,6 +361,11 @@ data CapElem
   | ERegion Region Multi -- region with multiplicity
   deriving (Eq, Show)
 
+isDuplicatable :: CapElem -> Bool
+isDuplicatable (ESVar _) = True
+isDuplicatable (ERegion _ NonUnique) = True
+isDuplicatable _ = False
+
 -- ESVar < EVar < ERegion.
 instance Ord CapElem where
   ESVar v1 <= ESVar v2 = v1 <= v2
@@ -399,7 +404,8 @@ equal :: Heap CapElem -> Heap CapElem -> Bool
 equal (viewMin -> Nothing) (viewMin -> Nothing) = True
 equal (viewMin -> Just (e1, h1)) (viewMin -> Just (e2, h2))
   | e1 /= e2 = False
-  | otherwise = equal (skip e1 h1) (skip e2 h2)
+  | isDuplicatable e1 = equal (skip e1 h1) (skip e2 h2)
+  | otherwise = equal h1 h2
 equal _ _ = False
 
 skip :: CapElem -> Heap CapElem -> Heap CapElem

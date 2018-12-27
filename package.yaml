@@ -39,3 +39,4 @@ tests:
     dependencies:
     - capabilities
     - hspec
+    - QuickCheck

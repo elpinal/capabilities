@@ -5,7 +5,11 @@
 {-# LANGUAGE ViewPatterns #-}
 
 module Capabilities
-  (
+  ( Capability(..)
+  , Region(..)
+  , Multi(..)
+  , Variable(..)
+  , capEqual
   ) where
 
 import Control.Monad.Freer

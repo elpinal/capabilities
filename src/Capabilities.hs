@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Capabilities
@@ -10,6 +11,7 @@ import Control.Monad.Freer
 import Control.Monad.Freer.Error
 import Control.Monad.Freer.Reader
 
+import Data.Functor
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Map.Lazy as Map
 
@@ -80,7 +82,7 @@ data Constructor
   | CType Type
   | CRegion Region
   | CCapability Capability
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
 
 fromType :: Constructor -> Type
 fromType (CType ty) = ty
@@ -145,6 +147,7 @@ instance Shift Name where
 instance Shift Capability
 instance Shift ConstrBinding
 instance Shift ConstrContext
+instance Shift Constructor
 instance Shift Kind
 instance Shift Multi
 instance Shift Region
@@ -206,7 +209,12 @@ instance Subst Capability where
 
 data TypeError
   = TypeMismatch Type Type
+  | KindMismatch Kind Kind
   | UnboundVariable Int
+  | UnboundConstrVariable Variable
+  | NotFunction Type
+  | NotPolymorphic Type
+  | NotCapability Constructor
   deriving (Eq, Show)
 
 nth :: Int -> [a] -> Maybe a
@@ -219,16 +227,122 @@ lookupVar n = do
   Context ts <- ask
   maybe (throwError $ UnboundVariable n) return $ nth n ts
 
+lookupCVar :: Members CEnv r => Variable -> Eff r ConstrBinding
+lookupCVar v @ (Variable n) = do
+  ConstrContext bs <- ask
+  maybe (throwError $ UnboundConstrVariable v) return $ nth n bs
+
+appnedCctx :: ConstrContext -> ConstrContext -> ConstrContext
+appnedCctx cctx1 cctx2 = f cctx1 $ shift (cctxLen cctx1) cctx2
+  where
+    f (ConstrContext bs1) (ConstrContext bs2) = ConstrContext $ bs1 ++ bs2
+
 class Typed a where
   type Output a
   type Effects a :: [* -> *]
 
   typeOf :: Members (Effects a) r => a -> Eff r (Output a)
 
+withFun :: Member (Error TypeError) r => (ConstrContext -> Capability -> NonEmpty.NonEmpty Type -> Region -> Eff r a) -> Type -> Eff r a
+withFun f (Fun cctx cap ts r) = f cctx cap ts r
+withFun _ ty                  = throwError $ NotFunction ty
+
+getHead :: ConstrContext -> Maybe (ConstrBinding, ConstrContext)
+getHead (ConstrContext [])       = Nothing
+getHead (ConstrContext (x : xs)) = return (x, ConstrContext xs)
+
+wfCBinding :: Members CEnv r => ConstrBinding -> Eff r ()
+wfCBinding (Bind _) = return ()
+wfCBinding (Subcap cap) = kindIs cap Cap
+
+wfCctx :: Members CEnv r => ConstrContext -> Eff r ()
+wfCctx (ConstrContext bs) = mapM_ wfCBinding bs
+
+withCctx :: Member (Reader ConstrContext) r => ConstrContext -> Eff r a -> Eff r a
+withCctx cctx m = local (appnedCctx cctx) m
+
+subcap :: Members CEnv r => Capability -> Capability -> Eff r ()
+subcap = undefined
+
+type Env = '[Reader Context, Reader ConstrContext, Error TypeError]
+type CEnv = '[Reader ConstrContext, Error TypeError]
+
+class Kinded a where
+  kindOf :: Members CEnv r => a -> Eff r Kind
+
+instance Kinded Variable where
+  kindOf v = do
+    b <- lookupCVar v
+    case b of
+      Bind k -> return k
+      Subcap _ -> return Cap
+
+instance Kinded Constructor where
+  kindOf (CVar v)          = kindOf v
+  kindOf (CType ty)        = kindOf ty
+  kindOf (CRegion r)       = kindOf r
+  kindOf (CCapability cap) = kindOf cap
+
+instance Kinded Type where
+  kindOf (TVar v) = kindOf v
+  kindOf IntType  = return Type
+  kindOf (HandleType r) = kindIs (CRegion r) Rgn $> Type
+  kindOf (Fun cctx cap ts r) = do
+    kindIs r Rgn
+    withCctx cctx $ do
+      wfCctx cctx
+      mapM_ (`kindIs` Type) ts
+      kindIs cap Cap
+    return Type
+  kindOf (TupleType ts r) = mapM_ (`kindIs` Type) ts >> kindIs r Rgn $> Type
+
+instance Kinded Region where
+  kindOf (RegionName _) = return Rgn
+  kindOf (RVar v)       = kindOf v
+
+instance Kinded Capability where
+  kindOf (CapVar v)      = kindOf v
+  kindOf Empty           = return Cap
+  kindOf (Singleton r _) = kindIs r Rgn $> Cap
+  kindOf (Join c1 c2)    = mapM_ (`kindIs` Cap) [c1, c2] $> Cap
+  kindOf (Strip cap)     = kindIs cap Cap $> Cap
+
+kindIs :: (Members CEnv r, Kinded a) => a -> Kind -> Eff r ()
+kindIs x k0 = do
+  k <- kindOf x
+  if k == k0
+    then return ()
+    else throwError $ KindMismatch k k0
+
 instance Typed Value where
   type Output Value = Type
-  type Effects Value = '[Reader Context, Error TypeError]
+  type Effects Value = Env
 
   typeOf (Var n) = lookupVar n
   typeOf (Int _) = return IntType
   typeOf (Handle name) = return $ HandleType $ RegionName name
+  typeOf (Inst v constr) = do
+    typeOf v >>= withFun f
+    where
+      f cctx cap ts r = do
+        case getHead cctx of
+          Nothing         -> throwError $ NotPolymorphic $ Fun cctx cap ts r
+          Just (b, cctx') ->
+            case b of
+              Bind k -> kindIs constr k $> Fun (g cctx') (g cap) (g <$> ts) r
+                where
+                  g :: (Shift a, Subst a) => a -> a
+                  g = substTop (cctxLen cctx) constr
+              Subcap cap1 -> do
+                case constr of
+                  CVar _ -> undefined
+                  CCapability cap0 -> do
+                    subcap cap0 cap1
+                    return $ Fun (g cctx') (g cap) (g <$> ts) r
+                      where
+                        g :: (Shift a, Subst a) => a -> a
+                        g = substTop (cctxLen cctx) constr
+                  _ -> throwError $ NotCapability constr
+
+substTop :: (Shift a, Subst a) => Int -> Constructor -> a -> a
+substTop n c x = shift (-1) $ subst 0 (shift n c) x

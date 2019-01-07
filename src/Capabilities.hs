@@ -393,12 +393,15 @@ strip (EVar v)      = ESVar v
 strip e @ (ESVar _) = e
 strip (ERegion r _) = ERegion r NonUnique
 
+normalize_ :: Capability -> NormalizedCap
+normalize_ (CapVar v)      = singleton $ EVar v
+normalize_ Empty           = NormalizedCap Heap.empty
+normalize_ (Singleton r m) = singleton $ ERegion r m
+normalize_ (Join c1 c2)    = coerce Heap.union (normalize_ c1) (normalize_ c2)
+normalize_ (Strip cap)     = mapNormalizedCap strip $ normalize_ cap
+
 normalize :: Capability -> NormalizedCap
-normalize (CapVar v)      = singleton $ EVar v
-normalize Empty           = NormalizedCap Heap.empty
-normalize (Singleton r m) = singleton $ ERegion r m
-normalize (Join c1 c2)    = coerce Heap.union (normalize c1) (normalize c2)
-normalize (Strip cap)     = mapNormalizedCap strip $ normalize cap
+normalize = coerce removeDup . normalize_
 
 skip :: CapElem -> Heap CapElem -> Heap CapElem
 skip e0 h0 @ (viewMin -> Just (e, h))
@@ -406,12 +409,19 @@ skip e0 h0 @ (viewMin -> Just (e, h))
   | otherwise = h0
 skip _ h = h
 
+removeDup :: Heap CapElem -> Heap CapElem
+removeDup (viewMin -> Just (e, h)) =
+  Heap.insert e $ removeDup $
+    if isDuplicatable e
+      then skip e h
+      else h
+removeDup _ = Heap.empty
+
 equal :: Heap CapElem -> Heap CapElem -> Bool
 equal (viewMin -> Nothing) (viewMin -> Nothing) = True
 equal (viewMin -> Just (e1, h1)) (viewMin -> Just (e2, h2))
-  | e1 /= e2          = False
-  | isDuplicatable e1 = equal (skip e1 h1) (skip e2 h2)
-  | otherwise         = equal h1 h2
+  | e1 /= e2  = False
+  | otherwise = equal h1 h2
 equal _ _ = False
 
 capEqual :: Capability -> Capability -> Bool

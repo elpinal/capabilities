@@ -400,6 +400,12 @@ normalize (Singleton r m) = singleton $ ERegion r m
 normalize (Join c1 c2)    = coerce Heap.union (normalize c1) (normalize c2)
 normalize (Strip cap)     = mapNormalizedCap strip $ normalize cap
 
+skip :: CapElem -> Heap CapElem -> Heap CapElem
+skip e0 h0 @ (viewMin -> Just (e, h))
+  | e0 == e   = skip e0 h
+  | otherwise = h0
+skip _ h = h
+
 equal :: Heap CapElem -> Heap CapElem -> Bool
 equal (viewMin -> Nothing) (viewMin -> Nothing) = True
 equal (viewMin -> Just (e1, h1)) (viewMin -> Just (e2, h2))
@@ -407,12 +413,6 @@ equal (viewMin -> Just (e1, h1)) (viewMin -> Just (e2, h2))
   | isDuplicatable e1 = equal (skip e1 h1) (skip e2 h2)
   | otherwise         = equal h1 h2
 equal _ _ = False
-
-skip :: CapElem -> Heap CapElem -> Heap CapElem
-skip e0 h0 @ (viewMin -> Just (e, h))
-  | e0 == e   = skip e0 h
-  | otherwise = h0
-skip _ h = h
 
 capEqual :: Capability -> Capability -> Bool
 capEqual c1 c2 = normalize c1 `eq` normalize c2

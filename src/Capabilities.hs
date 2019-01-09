@@ -1,7 +1,10 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MonadComprehensions #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE ViewPatterns #-}
 
 module Capabilities
@@ -10,11 +13,16 @@ module Capabilities
   , Multi(..)
   , Variable(..)
   , capEqual
+  , Subcap(..)
+  , ConstrContext(..)
+  , ConstrBinding(..)
+  , TypeError(..)
   ) where
 
 import Control.Monad.Freer
 import Control.Monad.Freer.Error
 import Control.Monad.Freer.Reader
+import Control.Monad.Freer.State
 
 import Data.Coerce
 import Data.Functor
@@ -427,3 +435,80 @@ equal _ _ = False
 capEqual :: Capability -> Capability -> Bool
 capEqual c1 c2 = normalize c1 `eq` normalize c2
   where eq = coerce equal
+
+class Subcap a where
+  (<:) :: Members CEnv r => a -> a -> Eff r Bool
+
+instance Subcap Multi where
+  Unique    <: _         = return True
+  NonUnique <: NonUnique = return True
+  NonUnique <: Unique    = return False
+
+is :: Variable -> CapElem -> Bool
+is v0 (EVar v)     = v == v0
+is v0 (ESVar v)    = v == v0
+is _ (ERegion _ _) = False
+
+isR :: Region -> Multi -> CapElem -> Bool
+isR r0 NonUnique (ERegion r NonUnique) = r0 == r
+isR r0 Unique (ERegion r _)            = r0 == r
+isR _ _ _                              = False
+
+member :: Eq a => a -> Heap a -> Bool
+member x h = not $ Heap.null $ Heap.filter (== x) h
+
+sc :: Members (State NormalizedCap ': CEnv) r => Heap CapElem -> Heap CapElem -> Eff r Bool
+sc (viewMin -> Just (e, h1)) h2 =
+  case e of
+    EVar v ->
+      let (h, rem) = Heap.partition (is v) h2 in
+        case viewMin h of
+          Just (ESVar _, h') -> modify (NormalizedCap . Heap.insert (ESVar v) . coerce) >> sc h1 (h' <> rem)
+          Just (_, h')       -> sc h1 $ h' <> rem
+          Nothing            -> do
+            cb <- lookupCVar v
+            case cb of
+              Bind Cap -> do
+                NormalizedCap h' <- get
+                [ ESVar v `member` h' && b | b <- sc h1 h2 ]
+              Bind _   -> throwError $ NotCapability $ CVar v
+              Subcap c -> do
+                NormalizedCap h' <- get
+                if ESVar v `member` h'
+                  then [ b1 || b2 | b1 <- sc h1 h2, b2 <- put (NormalizedCap h') >> sc (coerce (normalize c) <> h1) h2 ]
+                  else sc (coerce (normalize c) <> h1) h2
+    ESVar v ->
+      let (h, rem) = Heap.partition (== ESVar v) h2 in
+        case viewMin h of
+          Just (_, h') -> modify (NormalizedCap . Heap.insert (ESVar v) . coerce) >> sc h1 (h' <> rem)
+          Nothing      -> do
+            cb <- lookupCVar v
+            case cb of
+              Bind Cap -> do
+                NormalizedCap h' <- get
+                [ ESVar v `member` h' && b | b <- sc h1 h2 ]
+              Bind _   -> throwError $ NotCapability $ CVar v
+              Subcap c -> do
+                NormalizedCap h' <- get
+                if ESVar v `member` h'
+                  then [ b1 || b2 | b1 <- sc h1 h2, b2 <- put (NormalizedCap h') >> sc (coerce (normalize $ Strip c) <> h1) h2 ]
+                  else sc (coerce (normalize $ Strip c) <> h1) h2
+    ERegion r m ->
+      let (h, rem) = Heap.partition (isR r m) h2 in
+        case viewMin h of
+          Just (ERegion _ NonUnique, h') -> modify (NormalizedCap . Heap.insert (ERegion r NonUnique) . coerce) >> sc h1 (h' <> rem)
+          Just (_, h')                   -> sc h1 $ h' <> rem
+          Nothing                        -> do
+            NormalizedCap h' <- get
+            [ ERegion r NonUnique `member` h' && b | b <- sc h1 h2 ]
+sc _ h = return $ Heap.null h
+
+instance Subcap (Heap CapElem) where
+  h1 <: h2 = evalState (NormalizedCap Heap.empty) $ sc h1 h2
+      -- (ERegion r1 m1, ERegion r2 m2) -> [ r1 == r2 && b | b <- m1 <: m2 ]
+
+instance Subcap NormalizedCap where
+  NormalizedCap h1 <: NormalizedCap h2 = h1 <: h2
+
+instance Subcap Capability where
+  c1 <: c2 = normalize c1 <: normalize c2

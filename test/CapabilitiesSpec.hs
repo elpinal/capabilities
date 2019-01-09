@@ -4,6 +4,9 @@ import Test.Hspec
 import Test.QuickCheck
 
 import Control.Monad
+import Control.Monad.Freer
+import Control.Monad.Freer.Error
+import Control.Monad.Freer.Reader
 
 import Capabilities
 
@@ -80,3 +83,41 @@ spec = do
 
     it "says stripped capabilities are duplicatable" $ property $
       \x -> let y = Strip x in capEqual (Join y y) y
+
+  describe "(<:)" $
+    it "tests whether a capability is a subcapability of another capability" $ do
+      let subcap bs c1 c2 = run $ runError $ runReader (ConstrContext bs) $ c1 <: c2 :: Either TypeError Bool
+
+      subcap [] Empty Empty `shouldBe` return True
+
+      let r1 = RVar v0
+      subcap [] Empty (Singleton r1 NonUnique) `shouldBe` return False
+
+      subcap [] (Singleton r1 NonUnique) (Singleton r1 NonUnique) `shouldBe` return True
+      subcap [] (Singleton r1 Unique) (Singleton r1 NonUnique)    `shouldBe` return True
+      subcap [] (Singleton r1 Unique) (Singleton r1 Unique)       `shouldBe` return True
+      subcap [] (Singleton r1 NonUnique) (Singleton r1 Unique)    `shouldBe` return False
+
+      let r2 = RVar v1
+      subcap [] (Singleton r1 Unique) (Singleton r1 NonUnique `Join` Singleton r1 NonUnique)    `shouldBe` return True
+      subcap [] (Singleton r1 NonUnique) (Singleton r1 NonUnique `Join` Singleton r1 NonUnique) `shouldBe` return True
+      subcap [] (Singleton r1 NonUnique) (Singleton r1 NonUnique `Join` Singleton r2 NonUnique) `shouldBe` return False
+
+      subcap [] (Singleton r1 Unique `Join` Singleton r1 Unique) (Singleton r1 NonUnique)                               `shouldBe` return True
+      subcap [] (Singleton r1 Unique `Join` Singleton r1 Unique) (Singleton r1 NonUnique `Join` Singleton r1 NonUnique) `shouldBe` return True
+      subcap [] (Singleton r1 Unique `Join` Singleton r1 Unique) (Singleton r1 NonUnique `Join` Singleton r2 NonUnique) `shouldBe` return False
+
+      subcap [] (CapVar v0) (Singleton r1 NonUnique)                                `shouldBe` Left (UnboundConstrVariable v0)
+      subcap [Subcap $ Singleton r2 NonUnique] (CapVar v0) (Singleton r2 NonUnique) `shouldBe` return True
+      subcap [Subcap $ Singleton r2 Unique] (CapVar v0) (Singleton r2 NonUnique)    `shouldBe` return True
+      subcap [Subcap $ Singleton r2 Unique] (CapVar v0) (Singleton r2 Unique)       `shouldBe` return True
+      subcap [Subcap $ Singleton r2 NonUnique] (CapVar v0) (Singleton r2 Unique)    `shouldBe` return False
+
+      subcap [Subcap $ Singleton r2 NonUnique] (CapVar v0 `Join` CapVar v0) (CapVar v0)         `shouldBe` return False
+      subcap [Subcap $ Singleton r2 NonUnique] (CapVar v0 `Join` CapVar v0) (Strip $ CapVar v0) `shouldBe` return True
+
+      subcap [Subcap $ Singleton r2 NonUnique] (CapVar v0 `Join` CapVar v0) (Strip (CapVar v0) `Join` Singleton r2 NonUnique) `shouldBe` return True
+
+      subcap [Subcap $ Singleton r2 NonUnique] (CapVar v0 `Join` Strip (CapVar v0)) (Strip (CapVar v0) `Join` Singleton r2 NonUnique) `shouldBe` return True
+
+      subcap [] (Singleton r1 Unique `Join` Singleton r1 NonUnique) (Singleton r1 Unique `Join` Singleton r1 NonUnique) `shouldBe` return True

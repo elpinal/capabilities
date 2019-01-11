@@ -84,10 +84,10 @@ spec = do
     it "says stripped capabilities are duplicatable" $ property $
       \x -> let y = Strip x in capEqual (Join y y) y
 
-  describe "(<:)" $
-    it "tests whether a capability is a subcapability of another capability" $ do
-      let subcap bs c1 c2 = run $ runError $ runReader (ConstrContext bs) $ c1 <: c2 :: Either TypeError Bool
+  describe "(<:)" $ do
+    let subcap bs c1 c2 = run $ runError $ runReader (ConstrContext bs) $ c1 <: c2 :: Either TypeError Bool
 
+    it "tests whether a capability is a subcapability of another capability" $ do
       subcap [] Empty Empty `shouldBe` return True
 
       let r1 = RVar v0
@@ -121,3 +121,18 @@ spec = do
       subcap [Subcap $ Singleton r2 NonUnique] (CapVar v0 `Join` Strip (CapVar v0)) (Strip (CapVar v0) `Join` Singleton r2 NonUnique) `shouldBe` return True
 
       subcap [] (Singleton r1 Unique `Join` Singleton r1 NonUnique) (Singleton r1 Unique `Join` Singleton r1 NonUnique) `shouldBe` return True
+
+    it "is reflexive" $ property $
+      \x -> (== Right True) $ subcap [] x (x :: Capability)
+
+    it "is transitive" $ forAll (arbitrary `suchThat` \(c1, c2, c3) -> ((== Right True) $ subcap [] c1 (c2 :: Capability)) && ((== Right True) $ subcap [] c2 c3)) $
+      \(c1, _, c3) -> (== Right True) $ subcap [] c1 c3
+
+    it "respects the Join rule" $ forAll (arbitrary `suchThat` \(c1, c2, c1', c2') -> ((== Right True) $ subcap [] c1 (c1' :: Capability)) && ((== Right True) $ subcap [] c2 (c2' :: Capability))) $
+      \(c1, c2, c1', c2') -> (== Right True) $ subcap [] (Join c1 c2) $ Join c1' c2'
+
+    it "respects the Bar rule" $ forAll (arbitrary `suchThat` \(c1, c2) -> ((== Right True) $ subcap [] c1 (c2 :: Capability))) $
+      \(c1, c2) -> (== Right True) $ subcap [] (Strip c1) (Strip c2)
+
+    it "respects the Strip rule" $ forAll (arbitrary `suchThat` \(c1, c2) -> ((== Right True) $ subcap [] c1 (c2 :: Capability))) $
+      \(c1, c2) -> (== Right True) $ subcap [] c1 (Strip c2)

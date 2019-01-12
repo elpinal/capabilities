@@ -25,6 +25,7 @@ import Control.Monad.Freer.Reader
 import Control.Monad.Freer.State
 
 import Data.Coerce
+import Data.Foldable
 import Data.Functor
 import Data.Heap (Heap, viewMin)
 import qualified Data.Heap as Heap
@@ -248,6 +249,7 @@ lookupCVar v @ (Variable n) = do
   ConstrContext bs <- ask
   maybe (throwError $ UnboundConstrVariable v) return $ nth n bs
 
+-- The first argument will be the top.
 appnedCctx :: ConstrContext -> ConstrContext -> ConstrContext
 appnedCctx cctx1 cctx2 = f cctx1 $ shift (cctxLen cctx1) cctx2
   where
@@ -272,7 +274,11 @@ wfCBinding (Bind _) = return ()
 wfCBinding (Subcap cap) = kindIs cap Cap
 
 wfCctx :: Members CEnv r => ConstrContext -> Eff r ()
-wfCctx (ConstrContext bs) = mapM_ wfCBinding bs
+wfCctx (ConstrContext bs) = void $ foldlM f id bs
+  where
+    f m b = do
+      local m $ wfCBinding b
+      return $ appnedCctx (ConstrContext [b]) . m
 
 withCctx :: Member (Reader ConstrContext) r => ConstrContext -> Eff r a -> Eff r a
 withCctx cctx m = local (appnedCctx cctx) m
@@ -305,8 +311,8 @@ instance Kinded Type where
   kindOf (HandleType r) = kindIs (CRegion r) Rgn $> Type
   kindOf (Fun cctx cap ts r) = do
     kindIs r Rgn
+    wfCctx cctx
     withCctx cctx $ do
-      wfCctx cctx
       mapM_ (`kindIs` Type) ts
       kindIs cap Cap
     return Type

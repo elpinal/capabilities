@@ -7,6 +7,7 @@ import Control.Monad
 import Control.Monad.Freer
 import Control.Monad.Freer.Error
 import Control.Monad.Freer.Reader
+import Data.Either
 
 import Capabilities
 
@@ -20,7 +21,7 @@ v2 :: Variable
 v2 = Variable 2
 
 instance Arbitrary Variable where
-  arbitrary = liftM Variable arbitrary
+  arbitrary = Variable <$> arbitrary `suchThat` (0 <=)
 
 instance Arbitrary Region where
   arbitrary = liftM RVar arbitrary
@@ -46,6 +47,12 @@ instance Arbitrary Capability where
             , liftM Strip sub
             ]
             where sub = cap' (n `div` 2)
+
+instance Arbitrary Kind where
+  arbitrary = oneof $ return <$> [Type, Rgn, Cap]
+
+instance Arbitrary ConstrBinding where
+  arbitrary = oneof [Bind <$> arbitrary, Subcap <$> arbitrary]
 
 spec :: Spec
 spec = do
@@ -86,6 +93,7 @@ spec = do
 
   describe "(<:)" $ do
     let subcap bs c1 c2 = run $ runError $ runReader (ConstrContext bs) $ c1 <: c2 :: Either TypeError Bool
+    let wf bs = isRight (run $ runError $ runReader (ConstrContext []) $ wfCctx (ConstrContext bs) :: Either TypeError ())
 
     it "tests whether a capability is a subcapability of another capability" $ do
       subcap [] Empty Empty `shouldBe` return True
@@ -123,16 +131,16 @@ spec = do
       subcap [] (Singleton r1 Unique `Join` Singleton r1 NonUnique) (Singleton r1 Unique `Join` Singleton r1 NonUnique) `shouldBe` return True
 
     it "is reflexive" $ property $
-      \x -> (== Right True) $ subcap [] x (x :: Capability)
+      \bs x -> (== Right True) $ subcap bs x (x :: Capability)
 
-    it "is transitive" $ forAll (arbitrary `suchThat` \(c1, c2, c3) -> ((== Right True) $ subcap [] c1 (c2 :: Capability)) && ((== Right True) $ subcap [] c2 c3)) $
-      \(c1, _, c3) -> (== Right True) $ subcap [] c1 c3
+    it "is transitive" $ forAll (arbitrary `suchThat` \(bs, c1, c2, c3) -> wf bs && ((== Right True) $ subcap bs c1 (c2 :: Capability)) && ((== Right True) $ subcap bs c2 c3)) $
+      \(bs, c1, _, c3) -> (== Right True) $ subcap bs c1 c3
 
-    it "respects the Join rule" $ forAll (arbitrary `suchThat` \(c1, c2, c1', c2') -> ((== Right True) $ subcap [] c1 (c1' :: Capability)) && ((== Right True) $ subcap [] c2 (c2' :: Capability))) $
-      \(c1, c2, c1', c2') -> (== Right True) $ subcap [] (Join c1 c2) $ Join c1' c2'
+    it "respects the Join rule" $ forAll (arbitrary `suchThat` \(bs, c1, c2, c1', c2') -> wf bs && ((== Right True) $ subcap bs c1 (c1' :: Capability)) && ((== Right True) $ subcap bs c2 (c2' :: Capability))) $
+      \(bs, c1, c2, c1', c2') -> (== Right True) $ subcap bs (Join c1 c2) $ Join c1' c2'
 
-    it "respects the Bar rule" $ forAll (arbitrary `suchThat` \(c1, c2) -> ((== Right True) $ subcap [] c1 (c2 :: Capability))) $
-      \(c1, c2) -> (== Right True) $ subcap [] (Strip c1) (Strip c2)
+    it "respects the Bar rule" $ forAll (arbitrary `suchThat` \(bs, c1, c2) -> wf bs && ((== Right True) $ subcap bs c1 (c2 :: Capability))) $
+      \(bs, c1, c2) -> (== Right True) $ subcap bs (Strip c1) (Strip c2)
 
-    it "respects the Strip rule" $ forAll (arbitrary `suchThat` \(c1, c2) -> ((== Right True) $ subcap [] c1 (c2 :: Capability))) $
-      \(c1, c2) -> (== Right True) $ subcap [] c1 (Strip c2)
+    it "respects the Strip rule" $ forAll (arbitrary `suchThat` \(bs, c1, c2) -> wf bs && ((== Right True) $ subcap bs c1 (c2 :: Capability))) $
+      \(bs, c1, c2) -> (== Right True) $ subcap bs c1 (Strip c2)

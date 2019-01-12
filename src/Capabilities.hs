@@ -17,6 +17,8 @@ module Capabilities
   , ConstrContext(..)
   , ConstrBinding(..)
   , TypeError(..)
+  , Kind(..)
+  , wfCctx
   ) where
 
 import Control.Monad.Freer

@@ -34,6 +34,7 @@ import Data.Heap (Heap, viewMin)
 import qualified Data.Heap as Heap
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Map.Lazy as Map
+import qualified Data.Set as Set
 
 import GHC.Generics hiding (Constructor)
 
@@ -472,57 +473,60 @@ isR r0 NonUnique (ERegion r NonUnique) = r0 == r
 isR r0 Unique (ERegion r _)            = r0 == r
 isR _ _ _                              = False
 
-member :: Eq a => a -> Heap a -> Bool
-member x h = not $ Heap.null $ Heap.filter (== x) h
+newtype Store = Store (Set.Set (Either Region Variable))
+  deriving (Eq, Show)
 
-sc :: Members (State NormalizedCap ': CEnv) r => Heap CapElem -> Heap CapElem -> Eff r Bool
+addToStore :: Either Region Variable -> Store -> Store
+addToStore e (Store s) = Store $ Set.insert e s
+
+sc :: Members (State Store ': CEnv) r => Heap CapElem -> Heap CapElem -> Eff r Bool
 sc (viewMin -> Just (e, h1)) h2 =
   case e of
     EVar v ->
       let (h, rem) = Heap.partition (is v) h2 in
         case viewMin h of
-          Just (ESVar _, h') -> modify (NormalizedCap . Heap.insert (ESVar v) . coerce) >> sc h1 (h' <> rem)
+          Just (ESVar _, h') -> modify (addToStore $ Right v) >> sc h1 (h' <> rem)
           Just (_, h')       -> sc h1 $ h' <> rem
           Nothing            -> do
             cb <- lookupCVar v
             case cb of
               Bind Cap -> do
-                NormalizedCap h' <- get
-                [ ESVar v `member` h' && b | b <- sc h1 h2 ]
+                Store h' <- get
+                [ Right v `Set.member` h' && b | b <- sc h1 h2 ]
               Bind _   -> throwError $ NotCapability $ CVar v
               Subcap c -> do
-                NormalizedCap h' <- get
-                if ESVar v `member` h'
-                  then [ b1 || b2 | b1 <- sc h1 h2, b2 <- put (NormalizedCap h') >> sc (coerce (normalize c) <> h1) h2 ]
+                Store h' <- get
+                if Right v `Set.member` h'
+                  then [ b1 || b2 | b1 <- sc h1 h2, b2 <- put (Store h') >> sc (coerce (normalize c) <> h1) h2 ]
                   else sc (coerce (normalize c) <> h1) h2
     ESVar v ->
       let (h, rem) = Heap.partition (== ESVar v) h2 in
         case viewMin h of
-          Just (_, h') -> modify (NormalizedCap . Heap.insert (ESVar v) . coerce) >> sc h1 (h' <> rem)
+          Just (_, h') -> modify (addToStore $ Right v) >> sc h1 (h' <> rem)
           Nothing      -> do
             cb <- lookupCVar v
             case cb of
               Bind Cap -> do
-                NormalizedCap h' <- get
-                [ ESVar v `member` h' && b | b <- sc h1 h2 ]
+                Store h' <- get
+                [ Right v `Set.member` h' && b | b <- sc h1 h2 ]
               Bind _   -> throwError $ NotCapability $ CVar v
               Subcap c -> do
-                NormalizedCap h' <- get
-                if ESVar v `member` h'
-                  then [ b1 || b2 | b1 <- sc h1 h2, b2 <- put (NormalizedCap h') >> sc (coerce (normalize $ Strip c) <> h1) h2 ]
+                Store h' <- get
+                if Right v `Set.member` h'
+                  then [ b1 || b2 | b1 <- sc h1 h2, b2 <- put (Store h') >> sc (coerce (normalize $ Strip c) <> h1) h2 ]
                   else sc (coerce (normalize $ Strip c) <> h1) h2
     ERegion r m ->
       let (h, rem) = Heap.partition (isR r m) h2 in
         case viewMin h of
-          Just (ERegion _ NonUnique, h') -> modify (NormalizedCap . Heap.insert (ERegion r NonUnique) . coerce) >> sc h1 (h' <> rem)
+          Just (ERegion _ NonUnique, h') -> modify (addToStore $ Left r) >> sc h1 (h' <> rem)
           Just (_, h')                   -> sc h1 $ h' <> rem
           Nothing                        -> do
-            NormalizedCap h' <- get
-            [ ERegion r NonUnique `member` h' && b | b <- sc h1 h2 ]
+            Store h' <- get
+            [ Left r `Set.member` h' && b | b <- sc h1 h2 ]
 sc _ h = return $ Heap.null h
 
 instance Subcap (Heap CapElem) where
-  h1 <: h2 = evalState (NormalizedCap Heap.empty) $ sc h1 h2
+  h1 <: h2 = evalState (Store mempty) $ sc h1 h2
       -- (ERegion r1 m1, ERegion r2 m2) -> [ r1 == r2 && b | b <- m1 <: m2 ]
 
 instance Subcap NormalizedCap where

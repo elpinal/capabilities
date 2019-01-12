@@ -22,6 +22,7 @@ module Capabilities
   , fromBQ
   ) where
 
+import Control.Monad
 import Control.Monad.Freer
 import Control.Monad.Freer.Error
 import Control.Monad.Freer.Reader
@@ -463,6 +464,14 @@ instance Subcap Multi where
   NonUnique <: NonUnique = return True
   NonUnique <: Unique    = return False
 
+isESVar :: CapElem -> Bool
+isESVar (ESVar _) = True
+isESVar _         = False
+
+isNonUnique :: CapElem -> Bool
+isNonUnique (ERegion _ NonUnique) = True
+isNonUnique _                     = False
+
 is :: Variable -> CapElem -> Bool
 is v0 (EVar v)     = v == v0
 is v0 (ESVar v)    = v == v0
@@ -479,21 +488,39 @@ newtype Store = Store (Set.Set (Either Region Variable))
 addToStore :: Either Region Variable -> Store -> Store
 addToStore e (Store s) = Store $ Set.insert e s
 
+-- | A type class for duplicatable elements.
+class Dup a where
+  inj :: a -> Either Region Variable
+
+instance Dup Region where
+  inj = Left
+
+instance Dup Variable where
+  inj = Right
+
+mem :: (Dup a, Member (State Store) r) => a -> Eff r Bool
+mem x = do
+  Store s <- get
+  return $ inj x `Set.member` s
+
+expectCap :: Member (Error TypeError) r => Constructor -> Kind -> Eff r ()
+expectCap _ Cap = return ()
+expectCap c _   = throwError $ NotCapability c
+
 sc :: Members (State Store ': CEnv) r => Heap CapElem -> Heap CapElem -> Eff r Bool
 sc (viewMin -> Just (e, h1)) h2 =
   case e of
     EVar v ->
       let (h, rem) = Heap.partition (is v) h2 in
         case viewMin h of
-          Just (ESVar _, h') -> modify (addToStore $ Right v) >> sc h1 (h' <> rem)
-          Just (_, h')       -> sc h1 $ h' <> rem
-          Nothing            -> do
+          Just (e', h') -> do
+            when (isESVar e') $
+              modify $ addToStore $ Right v
+            sc h1 $ h' <> rem
+          Nothing -> do
             cb <- lookupCVar v
             case cb of
-              Bind Cap -> do
-                Store h' <- get
-                [ Right v `Set.member` h' && b | b <- sc h1 h2 ]
-              Bind _   -> throwError $ NotCapability $ CVar v
+              Bind k   -> expectCap (CVar v) k >> [ b' && b | b' <- mem v, b <- sc h1 h2 ]
               Subcap c -> do
                 Store h' <- get
                 if Right v `Set.member` h'
@@ -506,10 +533,7 @@ sc (viewMin -> Just (e, h1)) h2 =
           Nothing      -> do
             cb <- lookupCVar v
             case cb of
-              Bind Cap -> do
-                Store h' <- get
-                [ Right v `Set.member` h' && b | b <- sc h1 h2 ]
-              Bind _   -> throwError $ NotCapability $ CVar v
+              Bind k   -> expectCap (CVar v) k >> [ b' && b | b' <- mem v, b <- sc h1 h2 ]
               Subcap c -> do
                 Store h' <- get
                 if Right v `Set.member` h'
@@ -518,16 +542,15 @@ sc (viewMin -> Just (e, h1)) h2 =
     ERegion r m ->
       let (h, rem) = Heap.partition (isR r m) h2 in
         case viewMin h of
-          Just (ERegion _ NonUnique, h') -> modify (addToStore $ Left r) >> sc h1 (h' <> rem)
-          Just (_, h')                   -> sc h1 $ h' <> rem
-          Nothing                        -> do
-            Store h' <- get
-            [ Left r `Set.member` h' && b | b <- sc h1 h2 ]
+          Just (e', h') -> do
+            when (isNonUnique e') $
+              modify $ addToStore $ Left r
+            sc h1 $ h' <> rem
+          Nothing -> [ b' && b | b' <- mem r, b <- sc h1 h2 ]
 sc _ h = return $ Heap.null h
 
 instance Subcap (Heap CapElem) where
   h1 <: h2 = evalState (Store mempty) $ sc h1 h2
-      -- (ERegion r1 m1, ERegion r2 m2) -> [ r1 == r2 && b | b <- m1 <: m2 ]
 
 instance Subcap NormalizedCap where
   NormalizedCap h1 <: NormalizedCap h2 = h1 <: h2

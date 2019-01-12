@@ -94,6 +94,7 @@ spec = do
   describe "(<:)" $ do
     let subcap bs c1 c2 = run $ runError $ runReader (ConstrContext bs) $ c1 <: c2 :: Either TypeError Bool
     let wf bs = isRight (run $ runError $ runReader (ConstrContext []) $ wfCctx (ConstrContext bs) :: Either TypeError ())
+    let bq bs v = run $ runError $ runReader (ConstrContext bs) $ fromBQ v :: Either TypeError Capability
 
     it "tests whether a capability is a subcapability of another capability" $ do
       subcap [] Empty Empty `shouldBe` return True
@@ -130,11 +131,25 @@ spec = do
 
       subcap [] (Singleton r1 Unique `Join` Singleton r1 NonUnique) (Singleton r1 Unique `Join` Singleton r1 NonUnique) `shouldBe` return True
 
+   --  Too slow.
+   --
+   --  it "respects the Var rule" $
+   --    let f (bs, v, c) = wf bs &&
+   --                       case bq bs v of
+   --                         Right c0 -> ((== Right True) $ subcap bs c0 (c :: Capability))
+   --                         Left _ -> False
+   --      in
+   --      forAll (arbitrary `suchThat` f) $
+   --        \(bs, v, c) -> (== Right True) $ subcap bs (CapVar v) c
+
     it "is reflexive" $ property $
       \bs x -> (== Right True) $ subcap bs x (x :: Capability)
 
     it "is transitive" $ forAll (arbitrary `suchThat` \(bs, c1, c2, c3) -> wf bs && ((== Right True) $ subcap bs c1 (c2 :: Capability)) && ((== Right True) $ subcap bs c2 c3)) $
       \(bs, c1, _, c3) -> (== Right True) $ subcap bs c1 c3
+
+    it "respects the Eq rule" $ forAll (arbitrary `suchThat` \(_, x, y) -> capEqual x y) $
+      \(bs, x, y) -> (== Right True) $ subcap bs x y
 
     it "respects the Join rule" $ forAll (arbitrary `suchThat` \(bs, c1, c2, c1', c2') -> wf bs && ((== Right True) $ subcap bs c1 (c1' :: Capability)) && ((== Right True) $ subcap bs c2 (c2' :: Capability))) $
       \(bs, c1, c2, c1', c2') -> (== Right True) $ subcap bs (Join c1 c2) $ Join c1' c2'

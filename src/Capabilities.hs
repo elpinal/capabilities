@@ -19,6 +19,7 @@ module Capabilities
   , TypeError(..)
   , Kind(..)
   , wfCctx
+  , fromBQ
   ) where
 
 import Control.Monad.Freer
@@ -234,6 +235,7 @@ data TypeError
   | NotFunction Type
   | NotPolymorphic Type
   | NotCapability Constructor
+  | NotBoundedQuantification ConstrBinding
   deriving (Eq, Show)
 
 nth :: Int -> [a] -> Maybe a
@@ -250,6 +252,14 @@ lookupCVar :: Members CEnv r => Variable -> Eff r ConstrBinding
 lookupCVar v @ (Variable n) = do
   ConstrContext bs <- ask
   maybe (throwError $ UnboundConstrVariable v) return $ nth n bs
+
+-- From bounded quantification.
+fromBQ :: Members CEnv r => Variable -> Eff r Capability
+fromBQ v = do
+  b <- lookupCVar v
+  case b of
+    Subcap c -> return c
+    Bind _ -> throwError $ NotBoundedQuantification b
 
 -- The first argument will be the top.
 appnedCctx :: ConstrContext -> ConstrContext -> ConstrContext

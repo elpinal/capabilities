@@ -238,6 +238,7 @@ data TypeError
   | NotPolymorphic Type
   | NotCapability Constructor
   | NotBoundedQuantification ConstrBinding
+  | NotSubcapability Capability Capability
   deriving (Eq, Show)
 
 nth :: Int -> [a] -> Maybe a
@@ -298,7 +299,10 @@ withCctx :: Member (Reader ConstrContext) r => ConstrContext -> Eff r a -> Eff r
 withCctx cctx m = local (appnedCctx cctx) m
 
 subcap :: Members CEnv r => Capability -> Capability -> Eff r ()
-subcap = undefined
+subcap c1 c2 = do
+  ok <- c1 <: c2
+  unless ok $
+    throwError $ NotSubcapability c1 c2
 
 type Env = '[Reader Context, Reader ConstrContext, Error TypeError]
 type CEnv = '[Reader ConstrContext, Error TypeError]
